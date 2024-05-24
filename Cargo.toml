@@ -1,6 +1,6 @@
 [package]
 name = "lockfree-ringbuffer"
-version = "0.1.1"
+version = "0.1.2"
 authors = ["daibo"]
 description = "A lock-free ring buffer implementation in Rust"
 license = "MIT"

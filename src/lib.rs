@@ -144,6 +144,10 @@ impl<T: Send> RingBuffer<T> {
             }
         }
     }
+    /// get the length of the buffer
+    pub fn len(&self) -> usize {
+        self.head.load(Ordering::SeqCst) - self.tail.load(Ordering::SeqCst) as usize
+    }
     /// get the item at index `index`, relative to the tail
     pub fn get(&self, index: usize) -> Option<&T> {
         let tail = self.tail.load(Ordering::SeqCst);
@@ -301,7 +305,9 @@ mod tests {
         let rb = RingBuffer::new(5);
         for i in 0..5 {
             rb.push(i);
+            // assert_eq!(rb.len(), i+1);
         }
+        assert_eq!(rb.len(), 5);
         for i in 0..5 {
             assert_eq!(rb.get(i), Some(&i));
         }
