@@ -2,6 +2,8 @@
 name = "lockfree-ringbuffer"
 version = "0.1.1"
 authors = ["daibo"]
+description = "A lock-free ring buffer implementation in Rust"
+license = "MIT"
 
 [dev-dependencies]
 rand = "0.8"
