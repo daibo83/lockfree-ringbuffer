@@ -1,0 +1,7 @@
+[package]
+name = "lockfree-ringbuffer"
+version = "0.1.1"
+authors = ["daibo"]
+
+[dev-dependencies]
+rand = "0.8"
