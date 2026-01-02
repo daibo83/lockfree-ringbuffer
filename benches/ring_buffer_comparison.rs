@@ -140,10 +140,11 @@ fn bench_spsc_throughput(c: &mut Criterion) {
                     let consumer = thread::spawn(move || {
                         let mut count = 0;
                         loop {
-                            count += buffer_consumer.pop().count();
+                            // Use exclusive iterator for SPSC performance
+                            count += buffer_consumer.pop_exclusive().count();
                             if done_check.load(Ordering::Acquire) {
                                 // Drain any remaining
-                                count += buffer_consumer.pop().count();
+                                count += buffer_consumer.pop_exclusive().count();
                                 break;
                             }
                             std::hint::spin_loop();
@@ -417,12 +418,129 @@ fn bench_memory_access(c: &mut Criterion) {
     group.finish();
 }
 
+// ============================================================================
+// MPMC benchmarks (multiple consumers competing for items)  
+// ============================================================================
+
+/// Benchmark MPMC throughput: Tests the try_pop() method which supports
+/// multiple concurrent consumers. Pre-fills buffer then times drain.
+fn bench_mpmc_throughput(c: &mut Criterion) {
+    use std::time::Instant;
+    
+    let mut group = c.benchmark_group("mpmc_throughput");
+    group.sample_size(20);  // Fewer samples for threaded benchmarks
+    
+    const OPS: usize = 5_000;
+    const BUFFER_SIZE: usize = 512;
+    
+    group.throughput(Throughput::Elements(OPS as u64));
+    
+    // lockfree-ringbuffer - 2 consumers
+    group.bench_function("lockfree-ringbuffer/2-consumers", |b| {
+        b.iter_custom(|iters| {
+            let mut total_time = std::time::Duration::ZERO;
+            
+            for _ in 0..iters {
+                let buffer = Arc::new(
+                    lockfree_ringbuffer::threadsafe::LockFreeRingBuffer::new(BUFFER_SIZE)
+                );
+                
+                // Pre-fill buffer
+                for i in 0..OPS {
+                    buffer.push(i);
+                }
+                
+                let buffer1 = Arc::clone(&buffer);
+                let buffer2 = Arc::clone(&buffer);
+                
+                let start = Instant::now();
+                
+                // Two consumers race to drain
+                let h1 = thread::spawn(move || {
+                    let mut count = 0;
+                    while let Some(_) = buffer1.try_pop() {
+                        count += 1;
+                    }
+                    count
+                });
+                
+                let h2 = thread::spawn(move || {
+                    let mut count = 0;
+                    while let Some(_) = buffer2.try_pop() {
+                        count += 1;
+                    }
+                    count
+                });
+                
+                let c1 = h1.join().unwrap();
+                let c2 = h2.join().unwrap();
+                
+                total_time += start.elapsed();
+                
+                black_box(c1 + c2);
+            }
+            
+            total_time
+        });
+    });
+    
+    // crossbeam-channel - 2 consumers  
+    group.bench_function("crossbeam-channel/2-consumers", |b| {
+        b.iter_custom(|iters| {
+            let mut total_time = std::time::Duration::ZERO;
+            
+            for _ in 0..iters {
+                let (sender, receiver) = crossbeam_channel::bounded::<usize>(BUFFER_SIZE);
+                
+                // Pre-fill
+                for i in 0..OPS {
+                    let _ = sender.try_send(i);
+                }
+                drop(sender);  // Close sender so receivers know when done
+                
+                let r1 = receiver.clone();
+                let r2 = receiver.clone();
+                
+                let start = Instant::now();
+                
+                let h1 = thread::spawn(move || {
+                    let mut count = 0;
+                    while r1.try_recv().is_ok() {
+                        count += 1;
+                    }
+                    count
+                });
+                
+                let h2 = thread::spawn(move || {
+                    let mut count = 0;
+                    while r2.try_recv().is_ok() {
+                        count += 1;
+                    }
+                    count
+                });
+                
+                let c1 = h1.join().unwrap();
+                let c2 = h2.join().unwrap();
+                
+                total_time += start.elapsed();
+                
+                black_box(c1 + c2);
+            }
+            
+            total_time
+        });
+    });
+    
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_thread_push,
     bench_spsc_throughput,
     bench_burst_write,
     bench_memory_access,
+    bench_mpmc_throughput,
 );
 
 criterion_main!(benches);

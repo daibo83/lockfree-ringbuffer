@@ -2,13 +2,14 @@
 "One Ring to buffer them all..."
 *My preciousss... a lock-free ring buffer, yesss!*
 
-A high-performance, lock-free SPSC (Single Producer, Single Consumer) ring buffer for Rust. We wants it, we needs it for our real-time applications, precious!
+A high-performance, lock-free ring buffer for Rust with **MPMC** (Multiple Producer, Multiple Consumer) support. We wants it, we needs it for our real-time applications, precious!
 
 ## ✨ Features, Precious Features!
 
 - **Lock-free pushes** - Producer never blocks, no nasty mutexes, precious!
 - **Auto-eviction** - When full, oldest items gets evicted. Gone like the hobbitses!
-- **Single consumer** - One reader at a time, keeps it simple and safeses
+- **MPMC support** - Multiple consumers can compete for items with CAS-based claiming!
+- **SPSC fast path** - Use `pop_exclusive()` for maximum single-consumer performance
 - **Zero-copy iteration** - Pop returns an iterator, no copying until you wants it
 - **Miri-verified** - No undefined behavior, we checked, we did! Safe from tricksy memory bugs
 
@@ -16,17 +17,24 @@ A high-performance, lock-free SPSC (Single Producer, Single Consumer) ring buffe
 
 We benchmarked against other ringses, precious. Look how fast we goes!
 
-### SPSC Throughput (10,000 items)
+### SPSC Throughput (with `pop_exclusive()`)
 
 | Buffer Size | lockfree-ringbuffer | rtrb | ringbuf | crossbeam |
-|-------------|---------------------|------|---------|-----------|
-| **64** | 108 Melem/s | 158 Melem/s | 100 Melem/s | 22 Melem/s |
-| **1024** | 114 Melem/s | 175 Melem/s | 108 Melem/s | 61 Melem/s |
-| **16384** | 143 Melem/s | 234 Melem/s | 109 Melem/s | 67 Melem/s |
+|-------------|---------------------|------|---------|-----------| 
+| **64** | 75 Melem/s | 172 Melem/s | 108 Melem/s | 23 Melem/s |
+| **1024** | 80 Melem/s | 194 Melem/s | 117 Melem/s | 69 Melem/s |
+| **16384** | 110 Melem/s | 258 Melem/s | 117 Melem/s | 71 Melem/s |
 
-*Faster than ringbuf, yesss! And crossbeam? Preciousss, we crushes it!*
+### MPMC Throughput (2 consumers competing)
 
-*What's that, rtrb is faster? Bah! Tricksy library doesn't have auto-eviction, does it precious? It just BLOCKS when full! We never blocks, we is always ready! Besides, rtrb has no soul, no character... just cold, empty speed. We has FEATURES, precious!*
+| Implementation | Throughput |
+|----------------|------------|
+| **lockfree-ringbuffer** | **187 Melem/s** |
+| crossbeam-channel | 187 Melem/s |
+
+*We matches crossbeam-channel for MPMC, precious! And we has AUTO-EVICTION, something crossbeam doesn't have, yesss!*
+
+*What's that, rtrb is faster for SPSC? Bah! Tricksy library doesn't have MPMC or auto-eviction, does it precious? It just BLOCKS when full! We never blocks, we is always ready!*
 
 ## 📦 Installation
 
@@ -58,7 +66,7 @@ for item in ring.pop() {
 }
 ```
 
-### Producer-Consumer, Like Gollum and Sméagol!
+### SPSC - Single Producer, Single Consumer (Fast Path!)
 
 ```rust
 use lockfree_ringbuffer::threadsafe::LockFreeRingBuffer;
@@ -75,12 +83,13 @@ let producer = thread::spawn(move || {
     }
 });
 
-// Consumer thread - takes the preciousss
+// Consumer thread - uses EXCLUSIVE iterator for max speed!
 let consumer_ring = Arc::clone(&ring);
 let consumer = thread::spawn(move || {
     let mut received = Vec::new();
     loop {
-        for item in consumer_ring.pop() {
+        // pop_exclusive() is fastest when you're the only consumer!
+        for item in consumer_ring.pop_exclusive() {
             received.push(item);
         }
         if received.len() >= 100 {
@@ -94,6 +103,49 @@ let consumer = thread::spawn(move || {
 producer.join().unwrap();
 let items = consumer.join().unwrap();
 println!("Received {} items, yesss!", items.len());
+```
+
+### MPMC - Multiple Consumers Competing!
+
+```rust
+use lockfree_ringbuffer::threadsafe::LockFreeRingBuffer;
+use std::sync::Arc;
+use std::thread;
+
+let ring = Arc::new(LockFreeRingBuffer::new(128));
+
+// Producer
+let producer_ring = Arc::clone(&ring);
+thread::spawn(move || {
+    for i in 0..10000 {
+        producer_ring.push(i);
+    }
+});
+
+// Multiple consumers! They compete for items, precious!
+let mut handles = vec![];
+for id in 0..4 {
+    let consumer_ring = Arc::clone(&ring);
+    handles.push(thread::spawn(move || {
+        let mut count = 0;
+        loop {
+            // try_pop() is safe for multiple concurrent consumers!
+            if let Some(item) = consumer_ring.try_pop() {
+                count += 1;
+            } else {
+                // Buffer empty, maybe check if producer is done
+                break;
+            }
+        }
+        println!("Consumer {} got {} items", id, count);
+        count
+    }));
+}
+
+for h in handles {
+    h.join().unwrap();
+}
+// Items distributed among consumers - no duplicates!
 ```
 
 ### Peek Without Stealing, Just Looking!
@@ -136,6 +188,18 @@ ring.push(5);  // Evicts 2!
 assert_eq!(ring.front_cloned(), Some(3));  // Oldest survivor
 ```
 
+## 🔧 API Reference
+
+| Method | Use Case | Performance |
+|--------|----------|-------------|
+| `push(item)` | Add item to buffer | Lock-free, always succeeds |
+| `try_pop()` | Pop single item (MPMC-safe) | CAS-based, ~187 Melem/s |
+| `pop()` | Iterator using try_pop (MPMC-safe) | CAS-based |
+| `pop_exclusive()` | Fast iterator (SPSC only) | Lock-based, ~80-110 Melem/s |
+| `front_cloned()` | Peek oldest without removing | Clones the item |
+| `back_cloned()` | Peek newest without removing | Clones the item |
+| `len()` | Current number of items | Atomic load |
+
 ## 🧪 Testing
 
 ```bash
@@ -151,9 +215,9 @@ cargo bench
 
 ## ⚠️ Limitations
 
-- **Single consumer only** - Multiple consumers will panic! One precious at a time!
 - **Items may be lost** - If buffer is full and no consumer, items get evicted. Gone!
 - **No blocking** - Producer never waits, just evicts. Consumer spins if needed.
+- **`pop_exclusive()` panics with multiple consumers** - Use `try_pop()` for MPMC!
 
 ## 📜 License
 
